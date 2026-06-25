@@ -53,6 +53,7 @@ services:
     container_name: amulerr-stalled-checker
     restart: unless-stopped
     environment:
+      - TZ=Europe/Rome
       - CHECK_INTERVAL=10
       - AMULERR_HOST=http://your-amulerr-ip:3000
       - STALL_CHECKS=30
@@ -136,6 +137,7 @@ services:
     image: chryses/amulerr-stalled-checker:latest
     container_name: amulerr-stalled-checker
     environment:
+      - TZ=Europe/Rome
       - CHECK_INTERVAL=10
       - AMULERR_HOST=http://127.0.0.1:3000
       - STALL_CHECKS=30
@@ -217,5 +219,7 @@ services:
 | `LOG_LEVEL` | Logging level: `debug`, `info`, `warning`, `error`, `critical` | `info` | ❌ No |
 | `LOG_TO_FILE` | Directory path where the log file will be created as `amulerr_stalled_checker.log` | `None` | ❌ No |
 | `DRY_RUN` | Test mode — no actual deletions (`true`/`false`) | `false` | ❌ No |
+| `TZ` | Timezone (e.g., `Europe/Rome`) | `UTC` | ❌ No |
+
 
 
