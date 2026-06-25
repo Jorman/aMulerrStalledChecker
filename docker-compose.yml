@@ -1,0 +1,29 @@
+services:
+  amulerr-stalled-checker:
+    image: chryses/amulerr-stalled-checker:latest
+    container_name: amulerr-stalled-checker
+    environment:
+      - CHECK_INTERVAL=10
+      - AMULERR_HOST=http://your-amulerr:3000
+      - STALL_CHECKS=30
+      - STALL_DAYS=15
+      - RECENT_DOWNLOAD_GRACE_PERIOD=30
+      - DELETE_IF_UNMONITORED_SERIE=false
+      - DELETE_IF_UNMONITORED_SEASON=false
+      - DELETE_IF_UNMONITORED_EPISODE=true
+      - DELETE_IF_UNMONITORED_MOVIE=true
+      - DELETE_IF_ONLY_ON_AMULERR=false
+      - APPRISE_URLS=pover://your_user_key@your_app_token
+      - LOG_LEVEL=info
+      - LOG_TO_FILE=/logs
+      - DRY_RUN=false
+      - DOWNLOAD_CLIENT=amulerr
+      - RADARR_HOST=http://your-radarr:7878
+      - RADARR_API_KEY=your_radarr_api_key
+      - RADARR_CATEGORY=radarr-aMulerr
+      - SONARR_HOST=http://your-sonarr:8989
+      - SONARR_API_KEY=your_sonarr_api_key
+      - SONARR_CATEGORY=tv-sonarr-aMulerr
+    volumes:
+      - ./logs:/logs
+    restart: unless-stopped
