@@ -42,6 +42,8 @@ When aMulerr downloads get stuck without sources or stall indefinitely, this too
 
 ### Using Docker Compose
 
+Here is the basic standalone configuration for the checker:
+
 ```yaml
 version: '3.8'
 
@@ -51,7 +53,6 @@ services:
     container_name: amulerr-stalled-checker
     restart: unless-stopped
     environment:
-      - TZ=Europe/Rome
       - CHECK_INTERVAL=10
       - AMULERR_HOST=http://your-amulerr-ip:3000
       - STALL_CHECKS=30
@@ -76,6 +77,94 @@ services:
     volumes:
       - ./logs:/logs
 ```
+
+### Full Stack Integration (Recommended)
+
+If you run `amule` and `amulerr` in the same Docker Compose stack, you can set up healthchecks and startup dependencies to ensure that the services start in the correct order:
+
+```yaml
+version: '3.8'
+
+services:
+  amule:
+    container_name: amule
+    image: ngosang/amule:develop
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Rome
+      - GUI_PWD=your_amule_gui_password
+      - WEBUI_PWD=your_amule_webui_password
+      - MOD_AUTO_RESTART_ENABLED=true
+      - MOD_AUTO_RESTART_CRON=0 6 * * *
+      - MOD_AUTO_SHARE_ENABLED=false
+    network_mode: host
+    volumes:
+      - /path/to/amule/config:/home/amule/.aMule
+      - /path/to/downloads/complete:/downloads/complete
+      - /path/to/downloads/incomplete:/downloads/incomplete
+    healthcheck:
+      test: ["CMD-SHELL", "amulecmd --host=127.0.0.1 --port=4712 --password=$$GUI_PWD --command=status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  amulerr:
+    container_name: amulerr
+    image: isc30/amulerr:latest
+    user: "1000:1000"
+    environment:
+      - AMULE_HOST=127.0.0.1
+      - AMULE_PORT=4712
+      - AMULE_PWD=your_amule_gui_password
+    ports:
+      - "3000:3000"
+    depends_on:
+      amule:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  amulerr-stalled-checker:
+    image: chryses/amulerr-stalled-checker:latest
+    container_name: amulerr-stalled-checker
+    environment:
+      - CHECK_INTERVAL=10
+      - AMULERR_HOST=http://127.0.0.1:3000
+      - STALL_CHECKS=30
+      - STALL_DAYS=15
+      - RECENT_DOWNLOAD_GRACE_PERIOD=30
+      - DELETE_IF_UNMONITORED_SERIE=false
+      - DELETE_IF_UNMONITORED_SEASON=false
+      - DELETE_IF_UNMONITORED_EPISODE=true
+      - DELETE_IF_UNMONITORED_MOVIE=true
+      - DELETE_IF_ONLY_ON_AMULERR=false
+      - APPRISE_URLS=pover://your_user_key@your_app_token
+      - LOG_LEVEL=info
+      - LOG_TO_FILE=/logs
+      - DRY_RUN=false
+      - DOWNLOAD_CLIENT=amulerr
+      - RADARR_HOST=http://your-radarr-ip:7878
+      - RADARR_API_KEY=your_radarr_api_key
+      - RADARR_CATEGORY=radarr-aMulerr
+      - SONARR_HOST=http://your-sonarr-ip:8989
+      - SONARR_API_KEY=your_sonarr_api_key
+      - SONARR_CATEGORY=tv-sonarr-aMulerr
+    volumes:
+      - ./logs:/logs
+    depends_on:
+      amulerr:
+        condition: service_healthy
+    restart: unless-stopped
+```
+
 
 ---
 
@@ -128,5 +217,5 @@ services:
 | `LOG_LEVEL` | Logging level: `debug`, `info`, `warning`, `error`, `critical` | `info` | ❌ No |
 | `LOG_TO_FILE` | Directory path where the log file will be created as `amulerr_stalled_checker.log` | `None` | ❌ No |
 | `DRY_RUN` | Test mode — no actual deletions (`true`/`false`) | `false` | ❌ No |
-| `TZ` | Timezone (e.g., `Europe/Rome`) | `UTC` | ❌ No |
+
 

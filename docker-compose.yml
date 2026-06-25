@@ -1,10 +1,58 @@
+version: '3.8'
+
 services:
+  amule:
+    container_name: amule
+    image: ngosang/amule:develop
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Rome
+      - GUI_PWD=your_amule_gui_password
+      - WEBUI_PWD=your_amule_webui_password
+      - MOD_AUTO_RESTART_ENABLED=true
+      - MOD_AUTO_RESTART_CRON=0 6 * * *
+      - MOD_AUTO_SHARE_ENABLED=false
+    network_mode: host
+    volumes:
+      - /path/to/amule/config:/home/amule/.aMule
+      - /path/to/downloads/complete:/downloads/complete
+      - /path/to/downloads/incomplete:/downloads/incomplete
+    healthcheck:
+      test: ["CMD-SHELL", "amulecmd --host=127.0.0.1 --port=4712 --password=$$GUI_PWD --command=status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  amulerr:
+    container_name: amulerr
+    image: isc30/amulerr:latest
+    user: "1000:1000"
+    environment:
+      - AMULE_HOST=127.0.0.1
+      - AMULE_PORT=4712
+      - AMULE_PWD=your_amule_gui_password
+    ports:
+      - "3000:3000"
+    depends_on:
+      amule:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
   amulerr-stalled-checker:
     image: chryses/amulerr-stalled-checker:latest
     container_name: amulerr-stalled-checker
     environment:
       - CHECK_INTERVAL=10
-      - AMULERR_HOST=http://your-amulerr:3000
+      - AMULERR_HOST=http://127.0.0.1:3000
       - STALL_CHECKS=30
       - STALL_DAYS=15
       - RECENT_DOWNLOAD_GRACE_PERIOD=30
@@ -18,12 +66,16 @@ services:
       - LOG_TO_FILE=/logs
       - DRY_RUN=false
       - DOWNLOAD_CLIENT=amulerr
-      - RADARR_HOST=http://your-radarr:7878
+      - RADARR_HOST=http://your-radarr-ip:7878
       - RADARR_API_KEY=your_radarr_api_key
       - RADARR_CATEGORY=radarr-aMulerr
-      - SONARR_HOST=http://your-sonarr:8989
+      - SONARR_HOST=http://your-sonarr-ip:8989
       - SONARR_API_KEY=your_sonarr_api_key
       - SONARR_CATEGORY=tv-sonarr-aMulerr
     volumes:
       - ./logs:/logs
+    depends_on:
+      amulerr:
+        condition: service_healthy
     restart: unless-stopped
+
