@@ -701,6 +701,34 @@ class StallChecker:
             del self.warnings[current_hash]
             return False, "", 0
 
+        # Fast-lane stall for zero-source downloads that are also ghost/dead:
+        # src_count == 0 alone is not enough (the only seeder may have temporarily gone offline).
+        # The fast-lane only applies when the file has ALSO never been seen complete OR was
+        # last seen complete longer ago than STALL_DAYS — confirming it is not just temporarily
+        # unavailable but genuinely dead or a ghost link.
+        # If last_seen_complete IS recent (within STALL_DAYS), we fall through to the standard
+        # logic below, which will correctly leave the download alone until the source returns.
+        if download.src_count == 0:
+            stall_time = time.time() - (Config.STALL_DAYS * 24 * 60 * 60)
+            is_dead = (download.last_seen_complete == 0 or download.last_seen_complete < stall_time)
+            if is_dead:
+                fast_lane_threshold = Config.STALL_CHECKS // 2
+                if download.last_seen_complete == 0:
+                    reason = "No sources on network — file never seen complete (ghost link or dead file)"
+                else:
+                    reason = f"No sources on network — last seen complete > {Config.STALL_DAYS} days ago"
+                if current_hash in self.warnings:
+                    self.warnings[current_hash]['count'] += 1
+                    self.warnings[current_hash]['last_size'] = download.size_done
+                    count = self.warnings[current_hash]['count']
+                    if count > fast_lane_threshold:
+                        return True, reason, count
+                    else:
+                        return False, reason, count
+                else:
+                    self.warnings[current_hash] = {'count': 1, 'last_size': download.size_done}
+                    return False, reason, 1
+
         if download.last_seen_complete == 0:
             reason = "Never seen complete"
             if current_hash in self.warnings:
