@@ -156,6 +156,16 @@ class Config:
 
     @staticmethod
     def get_notification_urls():
+        """
+        Get Apprise notification URLs.
+
+        Priority:
+        1. APPRISE_URLS if set
+        2. Auto-convert PUSHOVER_* variables to Apprise format if both are set
+
+        Returns:
+            list: List of Apprise-compatible notification URLs
+        """
         urls = []
 
         if Config.APPRISE_URLS:
@@ -324,6 +334,7 @@ def check_special_cases(amulerr_data):
         return all_records
 
     def get_series_monitor_status(host, api_key, series_id):
+        """Gets series monitoring status."""
         logger.debug("Getting series monitor status for series_id: %s", series_id)
         url = f"{host}/api/v3/series/{series_id}"
         headers = {"X-Api-Key": api_key}
@@ -343,6 +354,17 @@ def check_special_cases(amulerr_data):
             return False, []
 
     def get_season_number_for_episode(sonarr_host, sonarr_api_key, episode_id):
+        """
+        Retrieve the season number of the episode using the Sonarr API.
+
+        Args:
+            sonarr_host (str): base URL of the Sonarr instance (e.g., "http://localhost:8989")
+            sonarr_api_key (str): API Key for the Sonarr instance.
+            episode_id (int): ID of the episode to be queried.
+
+        Returns:
+            int or None: The season number if found, otherwise None.
+        """
         url = f"{sonarr_host}/api/v3/episode/{episode_id}"
         params = {
             "apikey": sonarr_api_key
@@ -365,6 +387,7 @@ def check_special_cases(amulerr_data):
             return None
 
     def get_season_monitor_status(seasons, season_number):
+        """Gets the status of monitoring the season."""
         logger.debug("Getting season monitor status for season_number: %s", season_number)
         for season in seasons:
             logger.debug("Checking season %s", season.get('seasonNumber'))
@@ -375,6 +398,7 @@ def check_special_cases(amulerr_data):
         return False
 
     def get_episode_monitor_status(host, api_key, episode_id):
+        """Gets the status of episode monitoring."""
         logger.debug("Getting episode monitor status for episode_id: %s", episode_id)
         url = f"{host}/api/v3/episode/{episode_id}"
         headers = {"X-Api-Key": api_key}
@@ -393,6 +417,7 @@ def check_special_cases(amulerr_data):
             return False
 
     def is_movie_monitored(host, api_key, movie_id):
+        """Check if the film is monitored."""
         logger.debug("Checking movie monitor status for movie_id: %s", movie_id)
         url = f"{host}/api/v3/movie/{movie_id}"
         headers = {"X-Api-Key": api_key}
@@ -550,6 +575,13 @@ def handle_stalled_download(name: str, queue_id: str, host: str, api_key: str, d
     """
     Mark as failed a download (identified by queue_id) using the
     endpoint /api/v3/history/failed/{id}.
+
+    :param name: The name of the download to be marked as failed.
+    :param queue_id: The id of the download in the queue (Radarr/Sonarr) to be marked as failed.
+    :param host: The base host (URL) of the service (Radarr or Sonarr).
+    :param api_key: The API key for authentication.
+    :param dry_run: If True, the function only logs the call without executing the action
+    :return: True if the operation was successful, False otherwise
     """
     url = f"{host}/api/v3/history/failed/{queue_id}"
     headers = {
@@ -577,6 +609,17 @@ def handle_stalled_download(name: str, queue_id: str, host: str, api_key: str, d
 def send_notification(message: str, dry_run: bool = False, title: str = "aMulerr Stalled Checker"):
     """
     Send notification using Apprise.
+
+    Supports 70+ notification services via Apprise.
+    Automatically converts legacy PUSHOVER_* variables to Apprise format.
+
+    Args:
+        message (str): Notification message body
+        dry_run (bool): If True, log but don't send notification
+        title (str): Notification title
+
+    Returns:
+        bool: True if notification sent successfully, False otherwise
     """
     if dry_run:
         logging.debug(f"[DRY RUN] Notification not sent: {message}")
