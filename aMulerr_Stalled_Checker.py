@@ -181,16 +181,16 @@ class AmulerrDownload:
         self.name = file_data.get('name', '')
         self.hash = file_data.get('hash', '').upper()
         self.size = file_data.get('size', 0)
-        self.size_done = file_data.get('size_done', 0)
-        # Note: progress is fraction (0 to 1.0) in the qBittorrent API representation of aMulerr
+        self.size_done = file_data.get('downloaded', 0)             # aMulerr API key: 'downloaded'
+        # Note: progress is a fraction (0 to 1.0) in the aMulerr API (qBittorrent-compatible format)
         # Multiply by 100 to get a percentage
         self.progress = file_data.get('progress', 0) * 100
         self.status = file_data.get('state', '')
-        self.src_count = 0  # not exposed in qBittorrent API
-        self.src_count_a4af = 0  # not exposed in qBittorrent API
-        self.last_seen_complete = 0  # not exposed in qBittorrent API
+        self.src_count = file_data.get('num_complete', 0)           # aMulerr API key: 'num_complete'
+        self.src_count_a4af = file_data.get('num_seeds', 0)         # aMulerr API key: 'num_seeds'
+        self.last_seen_complete = file_data.get('seen_complete', 0) # aMulerr API key: 'seen_complete'
         self.category = file_data.get('category', 'unknown')
-        self.addedOn = 0  # not exposed in qBittorrent API
+        self.addedOn = file_data.get('added_on', 0) * 1000          # aMulerr API key: 'added_on' (seconds → ms)
 
     def __repr__(self):
         return (
@@ -628,41 +628,77 @@ def send_notification(message: str, dry_run: bool = False, title: str = "aMulerr
 class StallChecker:
     def __init__(self):
         self.warnings = {}
-        self.previous_warnings = set()
-        self.previous_downloads = []
+        self.previous_warnings = set()  # To keep track of downloads previously in warning
+        self.previous_downloads = []    # Download history for future reference
 
     def check_status(self, download: AmulerrDownload) -> tuple[bool, str, int]:
         current_hash = download.hash
 
-        # Ignore addedOn since it is not returned in qBittorrent emulation
+        added_on = download.addedOn / 1000  # Convert to seconds
+        recent_download_threshold = time.time() - (Config.RECENT_DOWNLOAD_GRACE_PERIOD * 60)
+        if added_on > recent_download_threshold:
+            if current_hash in self.warnings:
+                del self.warnings[current_hash]
+            return False, "", 0
+
+        # Check if src_count_a4af > 0 (sources available on other files — download is queued)
+        if download.src_count_a4af > 0:
+            if current_hash in self.warnings:
+                del self.warnings[current_hash]
+            return False, "", 0
+
         # Check if download is 100% complete
         if download.progress >= 100:
             if current_hash in self.warnings:
                 del self.warnings[current_hash]
             return False, "", 0
 
-        # Check if size_done has changed
+        # Check if size_done has changed since last check
         if current_hash in self.warnings and download.size_done != self.warnings[current_hash]['last_size']:
             del self.warnings[current_hash]
             return False, "", 0
 
-        # Default to checking if progress stalled (size has not changed)
-        # since last_seen_complete and other variables are not returned in the new API
-        reason = "Never seen complete / Download progress stalled"
-        if current_hash in self.warnings:
-            # Increment check_count if size_done hasn't changed
-            self.warnings[current_hash]['count'] += 1
-            self.warnings[current_hash]['last_size'] = download.size_done
-            count = self.warnings[current_hash]['count']
+        if download.last_seen_complete == 0:
+            reason = "Never seen complete"
+            if current_hash in self.warnings:
+                # Increment check_count if size_done hasn't changed
+                self.warnings[current_hash]['count'] += 1
+                self.warnings[current_hash]['last_size'] = download.size_done
+                count = self.warnings[current_hash]['count']
 
-            if count > Config.STALL_CHECKS:
-                return True, reason, count
+                if count > Config.STALL_CHECKS:
+                    return True, reason, count
+                else:
+                    return False, reason, count
             else:
-                return False, reason, count
-        else:
-            # Add to warnings if not previously warned
-            self.warnings[current_hash] = {'count': 1, 'last_size': download.size_done}
-            return False, reason, 1
+                # Add to warnings if not previously warned
+                self.warnings[current_hash] = {'count': 1, 'last_size': download.size_done}
+                return False, reason, 1
+
+        # Rule: If last_seen_complete > STALL_DAYS
+        if download.last_seen_complete > 0:
+            stall_time = time.time() - (Config.STALL_DAYS * 24 * 60 * 60)
+            if download.last_seen_complete < stall_time:
+                reason = f"Last seen complete > {Config.STALL_DAYS} days ago"
+                if current_hash in self.warnings:
+                    # Increment check_count if size_done hasn't changed
+                    self.warnings[current_hash]['count'] += 1
+                    self.warnings[current_hash]['last_size'] = download.size_done
+                    count = self.warnings[current_hash]['count']
+
+                    if count > Config.STALL_CHECKS:
+                        return True, reason, count
+                    else:
+                        return False, reason, count
+                else:
+                    # Add to warnings if not previously warned
+                    self.warnings[current_hash] = {'count': 1, 'last_size': download.size_done}
+                    return False, reason, 1
+            else:
+                if current_hash in self.warnings:
+                    del self.warnings[current_hash]
+                return False, "", 0
+        return False, "", 0
 
     def cleanup_warnings(self, current_hashes: set[str], downloads_map: dict):
         if not hasattr(self, 'hash_to_name_map'):
@@ -811,7 +847,10 @@ def main():
                     for download in incomplete_downloads:
                         is_stalled, stall_reason, check_count = download_states[download.hash]
                         status = f"STALLED: {stall_reason}" if is_stalled else "Active"
-                        logger.debug("Download: %s, Status: %s, Check Count: %s", download.name, status, check_count)
+
+                        last_seen = "Never" if download.last_seen_complete == 0 else \
+                            datetime.fromtimestamp(download.last_seen_complete).strftime('%Y-%m-%d %H:%M:%S')
+                        logger.debug("Download: %s, Status: %s, Last Seen Complete: %s, Check Count: %s", download.name, status, last_seen, check_count)
 
                 for download in incomplete_downloads:
                     is_stalled, stall_reason, check_count = download_states[download.hash]
