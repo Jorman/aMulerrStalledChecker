@@ -55,6 +55,7 @@ services:
       - CHECK_INTERVAL=10
       - AMULERR_HOST=http://127.0.0.1:3000
       - STALL_CHECKS=30
+      - GHOST_LINK_STALL_CHECKS=6  # Optional: checks before removing ghost links (never seen complete). Must be >= 1 and <= STALL_CHECKS. Default: same as STALL_CHECKS
       - STALL_DAYS=15
       - RECENT_DOWNLOAD_GRACE_PERIOD=30
       - DELETE_IF_UNMONITORED_SERIE=false

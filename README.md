@@ -57,6 +57,7 @@ services:
       - CHECK_INTERVAL=10
       - AMULERR_HOST=http://your-amulerr-ip:3000
       - STALL_CHECKS=30
+      - GHOST_LINK_STALL_CHECKS=6  # Optional: checks before removing ghost links. Default: same as STALL_CHECKS
       - STALL_DAYS=15
       - RECENT_DOWNLOAD_GRACE_PERIOD=30
       - DELETE_IF_UNMONITORED_SERIE=false
@@ -183,6 +184,13 @@ services:
 | `STALL_CHECKS` | Number of consecutive checks before marking as stalled | — | ✅ Yes |
 | `STALL_DAYS` | Days before a never-completed download is considered stalled | — | ✅ Yes |
 | `RECENT_DOWNLOAD_GRACE_PERIOD` | Minutes to wait before checking recent downloads | `30` | ✅ Yes |
+| `GHOST_LINK_STALL_CHECKS` | Checks before removing a **ghost link** (file never seen complete on the network, i.e., `last_seen_complete == 0`). Must be `>= 1` and `<= STALL_CHECKS`. | Same as `STALL_CHECKS` | ❌ No |
+
+> [!NOTE]
+> **Ghost link vs. stale source — two distinct thresholds:**
+> - A **ghost link** (`last_seen_complete == 0`) is a file that has *never* been seen complete anywhere on the eMule network. It will never download. `GHOST_LINK_STALL_CHECKS` controls how quickly these are cleaned up.
+> - A **stale source** (`last_seen_complete > 0` but older than `STALL_DAYS`) is a file that *did* exist at some point but whose sources have since dried up. It uses `STALL_CHECKS`, giving it more time in case sources reappear.
+> - If `GHOST_LINK_STALL_CHECKS` is not set, it defaults to `STALL_CHECKS` — preserving identical behaviour for existing deployments.
 
 #### *Arr Integration (at least one required)
 

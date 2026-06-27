@@ -77,6 +77,8 @@ class Config:
     STALL_CHECKS = int(os.environ.get('STALL_CHECKS'))  # number of checks before considering stall
     STALL_DAYS = int(os.environ.get('STALL_DAYS'))  # days after which a complete visa file is considered stalled
     RECENT_DOWNLOAD_GRACE_PERIOD = int(os.environ.get('RECENT_DOWNLOAD_GRACE_PERIOD', '30'))  # in minutes
+    # Checks before removing a ghost link (last_seen_complete == 0). Defaults to STALL_CHECKS (opt-in).
+    GHOST_LINK_STALL_CHECKS = int(os.environ.get('GHOST_LINK_STALL_CHECKS', STALL_CHECKS))
 
     # New configuration options for monitoring checks
     DELETE_IF_UNMONITORED_SERIE = os.environ.get('DELETE_IF_UNMONITORED_SERIE', 'false').lower() == 'true'
@@ -145,7 +147,24 @@ class Config:
             Config.RADARR_API_KEY = None
             Config.RADARR_CATEGORY = None
 
-        # New validation for *_HOST variables
+        # Validate GHOST_LINK_STALL_CHECKS bounds
+        if Config.GHOST_LINK_STALL_CHECKS < 1:
+            logger.error(
+                "GHOST_LINK_STALL_CHECKS must be >= 1 (got %s). "
+                "A value of 0 would remove ghost links on the very first check with no warning.",
+                Config.GHOST_LINK_STALL_CHECKS
+            )
+            sys.exit(1)
+
+        if Config.GHOST_LINK_STALL_CHECKS > Config.STALL_CHECKS:
+            logger.error(
+                "GHOST_LINK_STALL_CHECKS (%s) must be <= STALL_CHECKS (%s). "
+                "A ghost link cannot have a longer threshold than a normal stall.",
+                Config.GHOST_LINK_STALL_CHECKS, Config.STALL_CHECKS
+            )
+            sys.exit(1)
+
+        # Validate *_HOST variable formats
         host_variables = ['RADARR_HOST', 'SONARR_HOST', 'AMULERR_HOST']
 
         for host_var in host_variables:
@@ -674,6 +693,29 @@ class StallChecker:
         self.previous_warnings = set()  # To keep track of downloads previously in warning
         self.previous_downloads = []    # Download history for future reference
 
+    def _tick_warning(self, current_hash: str, size_done: int, threshold: int, reason: str) -> tuple[bool, str, int]:
+        """
+        Increment (or initialise) the warning counter for `current_hash` and evaluate
+        it against `threshold`.
+
+        Returns: (is_stalled, reason, count)
+          - is_stalled is True only when count > threshold.
+          - reason is passed through unchanged for consistent log messages.
+          - count is the current warning tally after incrementing.
+          - The first call for a new hash always returns (False, reason, 1),
+            ensuring a download is never removed without at least one prior warning.
+        """
+        if current_hash in self.warnings:
+            self.warnings[current_hash]['count'] += 1
+            self.warnings[current_hash]['last_size'] = size_done
+            count = self.warnings[current_hash]['count']
+        else:
+            self.warnings[current_hash] = {'count': 1, 'last_size': size_done}
+            count = 1
+
+        is_stalled = count > threshold
+        return is_stalled, reason, count
+
     def check_status(self, download: AmulerrDownload) -> tuple[bool, str, int]:
         current_hash = download.hash
 
@@ -701,46 +743,28 @@ class StallChecker:
             del self.warnings[current_hash]
             return False, "", 0
 
+        # Ghost link: file has NEVER been seen complete on the network.
+        # Uses the dedicated GHOST_LINK_STALL_CHECKS threshold (always <= STALL_CHECKS).
         if download.last_seen_complete == 0:
-            reason = "Never seen complete"
-            if current_hash in self.warnings:
-                # Increment check_count if size_done hasn't changed
-                self.warnings[current_hash]['count'] += 1
-                self.warnings[current_hash]['last_size'] = download.size_done
-                count = self.warnings[current_hash]['count']
+            return self._tick_warning(
+                current_hash, download.size_done,
+                Config.GHOST_LINK_STALL_CHECKS,
+                "Never seen complete on network (ghost link)"
+            )
 
-                if count > Config.STALL_CHECKS:
-                    return True, reason, count
-                else:
-                    return False, reason, count
-            else:
-                # Add to warnings if not previously warned
-                self.warnings[current_hash] = {'count': 1, 'last_size': download.size_done}
-                return False, reason, 1
+        # Stale source: was seen complete at some point, but too long ago to be reliable.
+        # Uses the standard STALL_CHECKS threshold.
+        stall_time = time.time() - (Config.STALL_DAYS * 24 * 60 * 60)
+        if download.last_seen_complete < stall_time:
+            return self._tick_warning(
+                current_hash, download.size_done,
+                Config.STALL_CHECKS,
+                f"Last seen complete > {Config.STALL_DAYS} days ago"
+            )
 
-        # Rule: If last_seen_complete > STALL_DAYS
-        if download.last_seen_complete > 0:
-            stall_time = time.time() - (Config.STALL_DAYS * 24 * 60 * 60)
-            if download.last_seen_complete < stall_time:
-                reason = f"Last seen complete > {Config.STALL_DAYS} days ago"
-                if current_hash in self.warnings:
-                    # Increment check_count if size_done hasn't changed
-                    self.warnings[current_hash]['count'] += 1
-                    self.warnings[current_hash]['last_size'] = download.size_done
-                    count = self.warnings[current_hash]['count']
-
-                    if count > Config.STALL_CHECKS:
-                        return True, reason, count
-                    else:
-                        return False, reason, count
-                else:
-                    # Add to warnings if not previously warned
-                    self.warnings[current_hash] = {'count': 1, 'last_size': download.size_done}
-                    return False, reason, 1
-            else:
-                if current_hash in self.warnings:
-                    del self.warnings[current_hash]
-                return False, "", 0
+        # Source was seen complete recently — download is healthy; clear any warning.
+        if current_hash in self.warnings:
+            del self.warnings[current_hash]
         return False, "", 0
 
     def cleanup_warnings(self, current_hashes: set[str], downloads_map: dict):
