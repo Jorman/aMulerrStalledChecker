@@ -20,6 +20,7 @@ When aMulerr downloads get stuck without sources or stall indefinitely, this too
 - 🧠 **Smart Stall Detection** — Configurable checks before marking downloads as stalled
 - 🧹 **Automatic Cleanup** — Removes stalled downloads and triggers new searches
 - 🗂️ **Category-Based Management** — Handles Sonarr and Radarr downloads separately via categories
+- 🔀 **Multi-Instance Support** — Connect multiple Radarr and/or Sonarr instances via pipe-separated env vars
 - 🧭 **Orphan Detection** — Removes downloads that exist only in aMulerr (optional)
 - 👀 **Monitoring-Aware** — Respects series/season/episode/movie monitoring status
 - ⏰ **Grace Period** — Configurable waiting time for recent downloads
@@ -171,6 +172,32 @@ services:
 
 ---
 
+## 🔀 Multi-Instance Support
+
+You can connect **multiple Radarr and/or Sonarr instances** by using pipe-separated (`|`) values for the host, API key, and category variables. Each position across the three variables maps to one instance — they must all have the **same number of entries** in the **same order**.
+
+```yaml
+# Two Radarr instances (e.g. HD + 4K)
+- RADARR_HOST=http://radarr1:7878|http://radarr2:7878
+- RADARR_API_KEY=api_key_radarr1|api_key_radarr2
+- RADARR_CATEGORY=radarr-aMulerr|radarr-aMulerr-4k
+
+# Two Sonarr instances (e.g. HD + 4K)
+- SONARR_HOST=http://sonarr1:8989|http://sonarr2:8989
+- SONARR_API_KEY=api_key_sonarr1|api_key_sonarr2
+- SONARR_CATEGORY=tv-sonarr-aMulerr|tv-sonarr-aMulerr-4k
+```
+
+> [!IMPORTANT]
+> All three variables for the same app (`HOST`, `API_KEY`, `CATEGORY`) must contain the exact same number of pipe-separated segments. A mismatch will cause the checker to exit with an error at startup.
+
+> [!NOTE]
+> Single-value configs (no pipe) work exactly as before — **full backward compatibility guaranteed**.
+
+Each download is matched to its instance by **category**: when a download's aMulerr category matches a configured instance's category, all API calls (history lookup, monitoring checks, mark-as-failed) are routed to that specific instance automatically.
+
+---
+
 ## ⚙️ Configuration
 
 ### Environment Variables
@@ -197,12 +224,15 @@ services:
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `DOWNLOAD_CLIENT` | Download client name configured in Sonarr/Radarr | — | ✅ Yes |
-| `RADARR_HOST` | Radarr base URL | `None` | ⚠️ Conditional |
-| `RADARR_API_KEY` | Radarr API key | `None` | ⚠️ Conditional |
-| `RADARR_CATEGORY` | aMulerr category for Radarr downloads | `None` | ⚠️ Conditional |
-| `SONARR_HOST` | Sonarr base URL | `None` | ⚠️ Conditional |
-| `SONARR_API_KEY` | Sonarr API key | `None` | ⚠️ Conditional |
-| `SONARR_CATEGORY` | aMulerr category for Sonarr downloads | `None` | ⚠️ Conditional |
+| `RADARR_HOST` | Radarr base URL. Supports multiple instances via pipe-separated values: `http://host1:7878\|http://host2:7878` | `None` | ⚠️ Conditional |
+| `RADARR_API_KEY` | Radarr API key. Must match the number of `RADARR_HOST` entries: `key1\|key2` | `None` | ⚠️ Conditional |
+| `RADARR_CATEGORY` | aMulerr category for Radarr downloads. Must match the number of `RADARR_HOST` entries: `cat1\|cat2` | `None` | ⚠️ Conditional |
+| `SONARR_HOST` | Sonarr base URL. Supports multiple instances via pipe-separated values: `http://host1:8989\|http://host2:8989` | `None` | ⚠️ Conditional |
+| `SONARR_API_KEY` | Sonarr API key. Must match the number of `SONARR_HOST` entries: `key1\|key2` | `None` | ⚠️ Conditional |
+| `SONARR_CATEGORY` | aMulerr category for Sonarr downloads. Must match the number of `SONARR_HOST` entries: `cat1\|cat2` | `None` | ⚠️ Conditional |
+
+> [!NOTE]
+> At least one of Radarr or Sonarr must be configured. All three variables for the same app must have the same number of pipe-separated entries.
 
 #### Monitoring & Cleanup Rules
 

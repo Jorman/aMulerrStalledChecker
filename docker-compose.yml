@@ -68,12 +68,22 @@ services:
       - LOG_TO_FILE=/logs
       - DRY_RUN=false
       - DOWNLOAD_CLIENT=amulerr
+      # Single Radarr instance (default)
       - RADARR_HOST=http://your-radarr-ip:7878
       - RADARR_API_KEY=your_radarr_api_key
       - RADARR_CATEGORY=radarr-aMulerr
+      # Multiple Radarr instances — use pipe-separated values (same order, same count):
+      # - RADARR_HOST=http://radarr1:7878|http://radarr2:7878
+      # - RADARR_API_KEY=api_key_1|api_key_2
+      # - RADARR_CATEGORY=category1|category2
+      # Single Sonarr instance (default)
       - SONARR_HOST=http://your-sonarr-ip:8989
       - SONARR_API_KEY=your_sonarr_api_key
       - SONARR_CATEGORY=tv-sonarr-aMulerr
+      # Multiple Sonarr instances — use pipe-separated values (same order, same count):
+      # - SONARR_HOST=http://sonarr1:8989|http://sonarr2:8989
+      # - SONARR_API_KEY=api_key_1|api_key_2
+      # - SONARR_CATEGORY=tv-category1|tv-category2
     volumes:
       - ./logs:/logs
     depends_on:

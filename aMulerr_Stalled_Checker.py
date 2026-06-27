@@ -66,6 +66,59 @@ class ConnectionFailureException(Exception):
     """Raised when connection to Sonarr/Radarr fails"""
     pass
 
+def _parse_pipe_instances(app_name: str) -> list[dict]:
+    """
+    Parse pipe-separated environment variables for a given *arr app (e.g. "RADARR" or "SONARR")
+    into a list of instance dicts: [{"host": ..., "api_key": ..., "category": ...}, ...]
+
+    Supports both single values (backward-compatible) and pipe-separated multi-instance values:
+        RADARR_HOST=http://host1:7878|http://host2:7878
+        RADARR_API_KEY=key1|key2
+        RADARR_CATEGORY=category1|category2
+
+    Returns an empty list when none of the vars are set.
+    Exits with an error when the vars are set but mismatched in count or have empty segments.
+    """
+    prefix = app_name.upper()
+    raw_host = os.environ.get(f'{prefix}_HOST', '')
+    raw_key  = os.environ.get(f'{prefix}_API_KEY', '')
+    raw_cat  = os.environ.get(f'{prefix}_CATEGORY', '')
+
+    # If none are set, this app is not configured
+    if not raw_host and not raw_key and not raw_cat:
+        return []
+
+    hosts = [h.strip() for h in raw_host.split('|')]
+    keys  = [k.strip() for k in raw_key.split('|')]
+    cats  = [c.strip() for c in raw_cat.split('|')]
+
+    # All three must have the same number of segments
+    if not (len(hosts) == len(keys) == len(cats)):
+        logger.error(
+            "%s_HOST, %s_API_KEY and %s_CATEGORY must contain the same number of "
+            "pipe-separated values (got %s, %s, %s respectively).",
+            prefix, prefix, prefix, len(hosts), len(keys), len(cats)
+        )
+        sys.exit(1)
+
+    instances = []
+    for idx, (host, key, cat) in enumerate(zip(hosts, keys, cats), start=1):
+        label = f"{prefix} instance #{idx}"
+
+        if not host or not key or not cat:
+            logger.error("%s: host, api_key and category must all be non-empty.", label)
+            sys.exit(1)
+
+        if not host.startswith(('http://', 'https://')):
+            logger.error("%s: host '%s' must start with 'http://' or 'https://'.", label, host)
+            sys.exit(1)
+
+        instances.append({"host": host, "api_key": key, "category": cat})
+        logger.debug("Loaded %s → host=%s  category=%s", label, host, cat)
+
+    return instances
+
+
 class Config:
     # All environment variables must be provided by docker-compose.yml
     DRY_RUN = os.environ.get('DRY_RUN', 'false').lower() == 'true'  # flags for dry running
@@ -92,15 +145,14 @@ class Config:
     # Download client name
     DOWNLOAD_CLIENT = os.environ.get('DOWNLOAD_CLIENT', '')  # download client name in Sonarr/Radarr
 
-    # Radarr config (optional)
-    RADARR_HOST = os.environ.get('RADARR_HOST', None)
-    RADARR_API_KEY = os.environ.get('RADARR_API_KEY', None)
-    RADARR_CATEGORY = os.environ.get('RADARR_CATEGORY', None)  # category for Radarr downloads
-
-    # Sonarr config (optional)
-    SONARR_HOST = os.environ.get('SONARR_HOST', None)
-    SONARR_API_KEY = os.environ.get('SONARR_API_KEY', None)
-    SONARR_CATEGORY = os.environ.get('SONARR_CATEGORY', None)  # category for Sonarr downloads
+    # Multi-instance *arr configuration.
+    # Each entry is a dict: {"host": str, "api_key": str, "category": str}
+    # Parsed from pipe-separated env vars, e.g.:
+    #   RADARR_HOST=http://host1:7878|http://host2:7878
+    #   RADARR_API_KEY=key1|key2
+    #   RADARR_CATEGORY=category1|category2
+    RADARR_INSTANCES: list = []   # populated by validate()
+    SONARR_INSTANCES: list = []   # populated by validate()
 
     # Notification configuration
     APPRISE_URLS = os.getenv('APPRISE_URLS', '')
@@ -122,30 +174,18 @@ class Config:
                 logger.error("Environment variable %s must be set.", field)
                 sys.exit(1)
 
-        radarr_used = Config.RADARR_HOST is not None
-        sonarr_used = Config.SONARR_HOST is not None
+        # Parse and validate per-app instances (supports single or pipe-separated multi-instance)
+        Config.RADARR_INSTANCES = _parse_pipe_instances('RADARR')
+        Config.SONARR_INSTANCES = _parse_pipe_instances('SONARR')
 
-        if not radarr_used and not sonarr_used:
+        if not Config.RADARR_INSTANCES and not Config.SONARR_INSTANCES:
             logger.error("At least one of RADARR_HOST or SONARR_HOST must be set.")
             sys.exit(1)
 
-        if radarr_used and not sonarr_used:
-            if Config.RADARR_API_KEY is None or Config.RADARR_CATEGORY is None:
-                logger.error("When using Radarr, RADARR_API_KEY and RADARR_CATEGORY must be set.")
-                sys.exit(1)
-
-            Config.SONARR_HOST = None
-            Config.SONARR_API_KEY = None
-            Config.SONARR_CATEGORY = None
-
-        if sonarr_used and not radarr_used:
-            if Config.SONARR_API_KEY is None or Config.SONARR_CATEGORY is None:
-                logger.error("When using Sonarr, SONARR_API_KEY and SONARR_CATEGORY must be set.")
-                sys.exit(1)
-
-            Config.RADARR_HOST = None
-            Config.RADARR_API_KEY = None
-            Config.RADARR_CATEGORY = None
+        if Config.RADARR_INSTANCES:
+            logger.info("Radarr: %s instance(s) configured.", len(Config.RADARR_INSTANCES))
+        if Config.SONARR_INSTANCES:
+            logger.info("Sonarr: %s instance(s) configured.", len(Config.SONARR_INSTANCES))
 
         # Validate GHOST_LINK_STALL_CHECKS bounds
         if Config.GHOST_LINK_STALL_CHECKS < 1:
@@ -164,14 +204,11 @@ class Config:
             )
             sys.exit(1)
 
-        # Validate *_HOST variable formats
-        host_variables = ['RADARR_HOST', 'SONARR_HOST', 'AMULERR_HOST']
-
-        for host_var in host_variables:
-            host_value = os.environ.get(host_var)
-            if host_value and not host_value.startswith(('http://', 'https://')):
-                logger.error("Environment variable %s must start with 'http://' or 'https://'.", host_var)
-                sys.exit(1)
+        # Validate AMULERR_HOST format
+        amulerr_host = os.environ.get('AMULERR_HOST')
+        if amulerr_host and not amulerr_host.startswith(('http://', 'https://')):
+            logger.error("Environment variable AMULERR_HOST must start with 'http://' or 'https://'.",)
+            sys.exit(1)
 
     @staticmethod
     def get_notification_urls():
@@ -461,18 +498,34 @@ def check_special_cases(amulerr_data):
         host = None
         api_key = None
 
-        if Config.RADARR_CATEGORY is not None and download.category == Config.RADARR_CATEGORY:
+        # Match download category against all configured Radarr instances
+        matched_radarr = next(
+            (inst for inst in Config.RADARR_INSTANCES if inst["category"] == download.category),
+            None
+        )
+        # Match download category against all configured Sonarr instances
+        matched_sonarr = next(
+            (inst for inst in Config.SONARR_INSTANCES if inst["category"] == download.category),
+            None
+        )
+
+        if matched_radarr:
             client = "radarr"
-            host = Config.RADARR_HOST
-            api_key = Config.RADARR_API_KEY
-        elif Config.SONARR_CATEGORY is not None and download.category == Config.SONARR_CATEGORY:
+            host = matched_radarr["host"]
+            api_key = matched_radarr["api_key"]
+        elif matched_sonarr:
             client = "sonarr"
-            host = Config.SONARR_HOST
-            api_key = Config.SONARR_API_KEY
+            host = matched_sonarr["host"]
+            api_key = matched_sonarr["api_key"]
         else:
+            all_categories = (
+                [inst["category"] for inst in Config.RADARR_INSTANCES] +
+                [inst["category"] for inst in Config.SONARR_INSTANCES]
+            )
             logger.warning(
-                f"Category '{download.category}' does not match either RADARR_CATEGORY or SONARR_CATEGORY defined in Config. "
-                f"Skip processing for downloading '{download.name}'."
+                "Category '%s' does not match any configured RADARR or SONARR category %s. "
+                "Skip processing for download '%s'.",
+                download.category, all_categories, download.name
             )
             continue
 
@@ -523,12 +576,27 @@ def check_special_cases(amulerr_data):
 
     for r_obj in radarr_queue:
         movie_id = r_obj.movie_id
+
+        # Resolve the Radarr instance that owns this download via its downloadId
+        r_raw_id = r_obj.downloadId
+        r_hash = r_raw_id[:-8] if r_raw_id.endswith("00000000") else r_raw_id
+        radarr_inst = next(
+            (inst for inst in Config.RADARR_INSTANCES
+             if inst["category"] == next(
+                 (d.category for d in amulerr_data if d.hash == r_hash), None
+             )),
+            Config.RADARR_INSTANCES[0] if Config.RADARR_INSTANCES else None
+        )
+        if radarr_inst is None:
+            logger.error("[RADARR] Could not resolve instance for '%s'. Skipping.", r_obj.title)
+            continue
+
         if not movie_id and Config.DELETE_IF_ONLY_ON_AMULERR:
             logger.info("The record '%s' does not contain 'movieId', it will only be considered on aMulerr.", r_obj.title)
             sonarr_radarr_downloads_to_remove.append(r_obj)
             continue
 
-        if not is_movie_monitored(Config.RADARR_HOST, Config.RADARR_API_KEY, movie_id) and Config.DELETE_IF_UNMONITORED_MOVIE:
+        if not is_movie_monitored(radarr_inst["host"], radarr_inst["api_key"], movie_id) and Config.DELETE_IF_UNMONITORED_MOVIE:
             logger.warning("[RADARR] The movie '%s' is not monitored. It will be marked for removal.", r_obj.title)
             sonarr_radarr_downloads_to_remove.append(r_obj)
 
@@ -536,7 +604,21 @@ def check_special_cases(amulerr_data):
         series_id = s_obj.series_id
         episode_id = s_obj.episode_id
 
-        season_number = get_season_number_for_episode(Config.SONARR_HOST, Config.SONARR_API_KEY, episode_id)
+        # Resolve the Sonarr instance that owns this download via its downloadId
+        s_raw_id = s_obj.downloadId
+        s_hash = s_raw_id[:-8] if s_raw_id.endswith("00000000") else s_raw_id
+        sonarr_inst = next(
+            (inst for inst in Config.SONARR_INSTANCES
+             if inst["category"] == next(
+                 (d.category for d in amulerr_data if d.hash == s_hash), None
+             )),
+            Config.SONARR_INSTANCES[0] if Config.SONARR_INSTANCES else None
+        )
+        if sonarr_inst is None:
+            logger.error("[SONARR] Could not resolve instance for '%s'. Skipping.", s_obj.title)
+            continue
+
+        season_number = get_season_number_for_episode(sonarr_inst["host"], sonarr_inst["api_key"], episode_id)
         s_obj.season_number = season_number
 
         if not series_id and Config.DELETE_IF_ONLY_ON_AMULERR:
@@ -544,7 +626,7 @@ def check_special_cases(amulerr_data):
             sonarr_radarr_downloads_to_remove.append(s_obj)
             continue
 
-        series_monitored, seasons = get_series_monitor_status(Config.SONARR_HOST, Config.SONARR_API_KEY, series_id)
+        series_monitored, seasons = get_series_monitor_status(sonarr_inst["host"], sonarr_inst["api_key"], series_id)
         if not series_monitored and Config.DELETE_IF_UNMONITORED_SERIE:
             logger.warning("[SONARR] The show '%s' is not monitored. It will be marked for removal.", s_obj.title)
             sonarr_radarr_downloads_to_remove.append(s_obj)
@@ -565,7 +647,7 @@ def check_special_cases(amulerr_data):
             sonarr_radarr_downloads_to_remove.append(s_obj)
             continue
 
-        if not get_episode_monitor_status(Config.SONARR_HOST, Config.SONARR_API_KEY, episode_id) and Config.DELETE_IF_UNMONITORED_EPISODE:
+        if not get_episode_monitor_status(sonarr_inst["host"], sonarr_inst["api_key"], episode_id) and Config.DELETE_IF_UNMONITORED_EPISODE:
             logger.warning("[SONARR] The episode '%s' is not monitored. It will be marked for removal.", s_obj.title)
             sonarr_radarr_downloads_to_remove.append(s_obj)
 
@@ -821,9 +903,14 @@ def fetch_amulerr_data() -> List[AmulerrDownload]:
             category = file.get('category', 'Category not found')
             logger.debug("File category: %s", category)
 
+        # Build the set of all valid categories across every configured instance
+        valid_categories = (
+            {inst["category"] for inst in Config.RADARR_INSTANCES} |
+            {inst["category"] for inst in Config.SONARR_INSTANCES}
+        )
         filtered_downloads = [
             AmulerrDownload(file) for file in files
-            if file.get('category') in [Config.SONARR_CATEGORY, Config.RADARR_CATEGORY]
+            if file.get('category') in valid_categories
         ]
 
         return filtered_downloads
@@ -942,25 +1029,34 @@ def main():
 
                         send_notification(f"Download {download.name} marked as stalled: {stall_reason}. Will be removed", dry_run=Config.DRY_RUN)
 
-                        if Config.RADARR_CATEGORY is not None and download.category == Config.RADARR_CATEGORY:
-                            host = Config.RADARR_HOST
-                            api_key = Config.RADARR_API_KEY
+                        matched_radarr_inst = next(
+                            (inst for inst in Config.RADARR_INSTANCES if inst["category"] == download.category),
+                            None
+                        )
+                        matched_sonarr_inst = next(
+                            (inst for inst in Config.SONARR_INSTANCES if inst["category"] == download.category),
+                            None
+                        )
+
+                        if matched_radarr_inst:
+                            host = matched_radarr_inst["host"]
+                            api_key = matched_radarr_inst["api_key"]
                             matching_item = next(
                                 (item for item in radarr_queue
                                  if (item.downloadId[:-8] == download.hash)),
                                 None
                             )
-                        elif Config.SONARR_CATEGORY is not None and download.category == Config.SONARR_CATEGORY:
-                            host = Config.SONARR_HOST
-                            api_key = Config.SONARR_API_KEY
+                        elif matched_sonarr_inst:
+                            host = matched_sonarr_inst["host"]
+                            api_key = matched_sonarr_inst["api_key"]
                             matching_item = next(
-                                (item for item in sonarr_queue 
+                                (item for item in sonarr_queue
                                  if (item.downloadId[:-8] == download.hash)),
                                 None
                             )
                         else:
                             logger.debug("Category not recognized for %s: %s", download.name, download.category)
-                            return
+                            continue
 
                         if not matching_item:
                             logger.error("Queue item not found for %s (hash: %s)", download.name, download.hash)
