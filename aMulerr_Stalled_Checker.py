@@ -156,8 +156,6 @@ class Config:
 
     # Notification configuration
     APPRISE_URLS = os.getenv('APPRISE_URLS', '')
-    PUSHOVER_USER_KEY = os.getenv('PUSHOVER_USER_KEY', '')
-    PUSHOVER_APP_TOKEN = os.getenv('PUSHOVER_APP_TOKEN', '')
 
     # Assigns API_URL directly in the body of the class
     API_URL = f"{os.environ.get('AMULERR_HOST', '')}{AMULERR_ENDPOINT}"
@@ -217,7 +215,6 @@ class Config:
 
         Priority:
         1. APPRISE_URLS if set
-        2. Auto-convert PUSHOVER_* variables to Apprise format if both are set
 
         Returns:
             list: List of Apprise-compatible notification URLs
@@ -231,13 +228,6 @@ class Config:
                 if u.strip()
             ])
             logger.info(f"Using APPRISE_URLS: {len(urls)} notification service(s) configured")
-            return urls
-
-        if Config.PUSHOVER_USER_KEY and Config.PUSHOVER_APP_TOKEN:
-            pushover_url = f"pover://{Config.PUSHOVER_USER_KEY}@{Config.PUSHOVER_APP_TOKEN}"
-            urls.append(pushover_url)
-            logger.info("Auto-converting PUSHOVER_* environment variables to Apprise format")
-            logger.info("Tip: Consider using APPRISE_URLS=pover://user_key@app_token for better clarity")
             return urls
 
         return urls
@@ -530,7 +520,9 @@ def check_special_cases(amulerr_data):
             continue
 
         try:
+            logger.debug("[%s] Querying history from %s", download.name, client.upper())
             history_records = get_history_records(download, host, api_key, full_hash)
+            logger.debug("[%s] Retrieved %s history records", download.name, len(history_records))
         except ConnectionFailureException as e:
             logger.error(f"🚨 Connection failure detected for '{download.name}': {e}")
             logger.warning(f"⚠️ Interrupting current check cycle. Will retry in {Config.CHECK_INTERVAL} minutes.")
@@ -547,11 +539,17 @@ def check_special_cases(amulerr_data):
         valid_record = None
         for record in history_records:
             if record.get("eventType") != "grabbed":
+                logger.debug("[%s] Ignored history record: eventType is '%s' (expected 'grabbed')", download.name, record.get("eventType"))
                 continue
             data = record.get("data", {})
-            if str(data.get("downloadClientName", "")).lower() == str(Config.DOWNLOAD_CLIENT).lower():
+            download_client = str(data.get("downloadClientName", "")).lower()
+            expected_client = str(Config.DOWNLOAD_CLIENT).lower()
+            if download_client == expected_client:
                 valid_record = record
+                logger.debug("[%s] Found matching grabbed history record for client '%s'", download.name, download_client)
                 break
+            else:
+                logger.debug("[%s] Ignored history record: downloadClientName is '%s' (expected '%s')", download.name, download_client, expected_client)
 
         if valid_record is None:
             if Config.DELETE_IF_ONLY_ON_AMULERR:
@@ -596,9 +594,12 @@ def check_special_cases(amulerr_data):
             sonarr_radarr_downloads_to_remove.append(r_obj)
             continue
 
+        logger.debug("[RADARR] Checking monitoring status for movie '%s' (movieId: %s)", r_obj.title, movie_id)
         if not is_movie_monitored(radarr_inst["host"], radarr_inst["api_key"], movie_id) and Config.DELETE_IF_UNMONITORED_MOVIE:
             logger.warning("[RADARR] The movie '%s' is not monitored. It will be marked for removal.", r_obj.title)
             sonarr_radarr_downloads_to_remove.append(r_obj)
+        else:
+            logger.debug("[RADARR] Movie '%s' is monitored or DELETE_IF_UNMONITORED_MOVIE is disabled.", r_obj.title)
 
     for s_obj in sonarr_queue:
         series_id = s_obj.series_id
@@ -626,11 +627,14 @@ def check_special_cases(amulerr_data):
             sonarr_radarr_downloads_to_remove.append(s_obj)
             continue
 
+        logger.debug("[SONARR] Checking monitoring status for seriesId: %s, episodeId: %s, season: %s", series_id, episode_id, season_number)
         series_monitored, seasons = get_series_monitor_status(sonarr_inst["host"], sonarr_inst["api_key"], series_id)
         if not series_monitored and Config.DELETE_IF_UNMONITORED_SERIE:
             logger.warning("[SONARR] The show '%s' is not monitored. It will be marked for removal.", s_obj.title)
             sonarr_radarr_downloads_to_remove.append(s_obj)
             continue
+        else:
+            logger.debug("[SONARR] Show '%s' series monitored: %s (DELETE_IF_UNMONITORED_SERIE: %s)", s_obj.title, series_monitored, Config.DELETE_IF_UNMONITORED_SERIE)
 
         if not episode_id and Config.DELETE_IF_ONLY_ON_AMULERR:
             logger.warning("The record '%s' does not contain 'episodeId', it will only be considered on aMulerr.", s_obj.title)
@@ -646,10 +650,14 @@ def check_special_cases(amulerr_data):
             logger.warning("[SONARR] The season %s for '%s' is not monitored. It will be marked for removal.", season_number, s_obj.title)
             sonarr_radarr_downloads_to_remove.append(s_obj)
             continue
+        else:
+            logger.debug("[SONARR] Season %s for '%s' monitored or DELETE_IF_UNMONITORED_SEASON is disabled.", season_number, s_obj.title)
 
         if not get_episode_monitor_status(sonarr_inst["host"], sonarr_inst["api_key"], episode_id) and Config.DELETE_IF_UNMONITORED_EPISODE:
             logger.warning("[SONARR] The episode '%s' is not monitored. It will be marked for removal.", s_obj.title)
             sonarr_radarr_downloads_to_remove.append(s_obj)
+        else:
+            logger.debug("[SONARR] Episode '%s' (episodeId: %s) is monitored or DELETE_IF_UNMONITORED_EPISODE is disabled.", s_obj.title, episode_id)
 
     return amulerr_downloads_to_remove, sonarr_radarr_downloads_to_remove, sonarr_queue, radarr_queue
 
@@ -712,7 +720,6 @@ def send_notification(message: str, dry_run: bool = False, title: str = "aMulerr
     Send notification using Apprise.
 
     Supports 70+ notification services via Apprise.
-    Automatically converts legacy PUSHOVER_* variables to Apprise format.
 
     Args:
         message (str): Notification message body
@@ -723,13 +730,13 @@ def send_notification(message: str, dry_run: bool = False, title: str = "aMulerr
         bool: True if notification sent successfully, False otherwise
     """
     if dry_run:
-        logging.debug(f"[DRY RUN] Notification not sent: {message}")
+        logger.debug(f"[DRY RUN] Notification not sent: {message}")
         return True
 
     notification_urls = Config.get_notification_urls()
     
     if not notification_urls:
-        logging.warning(
+        logger.warning(
             "No notification service configured. "
             "Set APPRISE_URLS environment variable. "
             "Example: APPRISE_URLS=pover://user_key@app_token"
@@ -743,15 +750,15 @@ def send_notification(message: str, dry_run: bool = False, title: str = "aMulerr
         for url in notification_urls:
             if apobj.add(url):
                 added_count += 1
-                logging.debug(f"Added notification service: {url[:20]}...")
+                logger.debug(f"Added notification service: {url[:20]}...")
             else:
-                logging.warning(f"Failed to add invalid notification URL: {url[:30]}...")
+                logger.warning(f"Failed to add invalid notification URL: {url[:30]}...")
         
         if added_count == 0:
-            logging.error("No valid notification services could be added")
+            logger.error("No valid notification services could be added")
             return False
         
-        logging.debug(f"Sending notification to {added_count} service(s)...")
+        logger.debug(f"Sending notification to {added_count} service(s)...")
         
         success = apobj.notify(
             body=message,
@@ -759,21 +766,46 @@ def send_notification(message: str, dry_run: bool = False, title: str = "aMulerr
         )
         
         if success:
-            logging.info(f"Notification sent successfully to {added_count} service(s)")
+            logger.info(f"Notification sent successfully to {added_count} service(s)")
             return True
         else:
-            logging.error("Failed to send notification to one or more services")
+            logger.error("Failed to send notification to one or more services")
             return False
             
     except Exception as e:
-        logging.error(f"Error sending notification via Apprise: {str(e)}", exc_info=True)
+        logger.error(f"Error sending notification via Apprise: {str(e)}", exc_info=True)
         return False
 
 class StallChecker:
     def __init__(self):
-        self.warnings = {}
+        self.warnings_file = ""
+        if log_to_file_path:
+            self.warnings_file = os.path.join(log_to_file_path, "warnings.json")
+        self.warnings = self.load_warnings()
         self.previous_warnings = set()  # To keep track of downloads previously in warning
         self.previous_downloads = []    # Download history for future reference
+
+    def load_warnings(self) -> dict:
+        if self.warnings_file and os.path.exists(self.warnings_file):
+            try:
+                import json
+                with open(self.warnings_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    logger.info("Loaded %s warnings from persistent storage (%s)", len(data), self.warnings_file)
+                    return data
+            except Exception as e:
+                logger.error("Error loading warnings file: %s", e)
+        return {}
+
+    def save_warnings(self):
+        if self.warnings_file:
+            try:
+                import json
+                with open(self.warnings_file, "w", encoding="utf-8") as f:
+                    json.dump(self.warnings, f, indent=2, ensure_ascii=False)
+                logger.debug("Saved warnings to persistent storage (%s)", self.warnings_file)
+            except Exception as e:
+                logger.error("Error saving warnings file: %s", e)
 
     def _tick_warning(self, current_hash: str, size_done: int, threshold: int, reason: str) -> tuple[bool, str, int]:
         """
@@ -796,6 +828,7 @@ class StallChecker:
             count = 1
 
         is_stalled = count > threshold
+        self.save_warnings()
         return is_stalled, reason, count
 
     def check_status(self, download: AmulerrDownload) -> tuple[bool, str, int]:
@@ -803,50 +836,114 @@ class StallChecker:
 
         added_on = download.addedOn / 1000  # Convert to seconds
         recent_download_threshold = time.time() - (Config.RECENT_DOWNLOAD_GRACE_PERIOD * 60)
+        
+        logger.debug("[%s] Check status evaluating:", download.name)
+        logger.debug("  - Added on: %s", datetime.fromtimestamp(added_on).strftime('%Y-%m-%d %H:%M:%S'))
+        logger.debug("  - Grace period threshold: %s (grace period: %s min)", datetime.fromtimestamp(recent_download_threshold).strftime('%Y-%m-%d %H:%M:%S'), Config.RECENT_DOWNLOAD_GRACE_PERIOD)
+        
         if added_on > recent_download_threshold:
+            logger.debug(
+                "  -> MATCH: Download is within the grace period (added %s minutes ago, grace period is %s minutes). Skipping further checks.",
+                round((time.time() - added_on) / 60, 2),
+                Config.RECENT_DOWNLOAD_GRACE_PERIOD
+            )
             if current_hash in self.warnings:
                 del self.warnings[current_hash]
+                self.save_warnings()
             return False, "", 0
+        else:
+            logger.debug("  -> SKIP: Download is older than the grace period.")
 
         # Check if src_count_a4af > 0 (sources available on other files — download is queued)
+        logger.debug("  - Queue check: src_count_a4af = %s", download.src_count_a4af)
         if download.src_count_a4af > 0:
+            logger.debug(
+                "  -> MATCH: Download has sources queued on other files (src_count_a4af: %s > 0). Skipping further checks.",
+                download.src_count_a4af
+            )
             if current_hash in self.warnings:
                 del self.warnings[current_hash]
+                self.save_warnings()
             return False, "", 0
+        else:
+            logger.debug("  -> SKIP: No sources queued on other files (src_count_a4af <= 0).")
 
         # Check if download is 100% complete
+        logger.debug("  - Progress check: progress = %s%%", download.progress)
         if download.progress >= 100:
+            logger.debug("  -> MATCH: Download is 100%% complete. Skipping further checks.")
             if current_hash in self.warnings:
                 del self.warnings[current_hash]
+                self.save_warnings()
             return False, "", 0
+        else:
+            logger.debug("  -> SKIP: Download is not complete (progress < 100%%).")
 
         # Check if size_done has changed since last check
-        if current_hash in self.warnings and download.size_done != self.warnings[current_hash]['last_size']:
+        last_size = self.warnings[current_hash]['last_size'] if current_hash in self.warnings else None
+        logger.debug("  - Size progress check: current size_done = %s, last checked size = %s", download.size_done, last_size)
+        if current_hash in self.warnings and download.size_done != last_size:
+            logger.debug(
+                "  -> MATCH: Progress detected! size_done changed from %s to %s. Clearing warning counter.",
+                last_size,
+                download.size_done
+            )
             del self.warnings[current_hash]
+            self.save_warnings()
             return False, "", 0
+        else:
+            if current_hash in self.warnings:
+                logger.debug("  -> SKIP: Size has not changed since last check (still %s).", download.size_done)
+            else:
+                logger.debug("  -> SKIP: No previous warnings recorded for this file.")
 
         # Ghost link: file has NEVER been seen complete on the network.
         # Uses the dedicated GHOST_LINK_STALL_CHECKS threshold (always <= STALL_CHECKS).
+        logger.debug("  - Ghost link check: last_seen_complete = %s", download.last_seen_complete)
         if download.last_seen_complete == 0:
-            return self._tick_warning(
+            is_stalled, reason, count = self._tick_warning(
                 current_hash, download.size_done,
                 Config.GHOST_LINK_STALL_CHECKS,
                 "Never seen complete on network (ghost link)"
             )
+            logger.debug(
+                "  -> MATCH: Ghost link detected. Ticking warning: count=%s/%s, is_stalled=%s, reason='%s'",
+                count, Config.GHOST_LINK_STALL_CHECKS, is_stalled, reason
+            )
+            return is_stalled, reason, count
+        else:
+            logger.debug("  -> SKIP: File has been seen complete on network at least once.")
 
         # Stale source: was seen complete at some point, but too long ago to be reliable.
         # Uses the standard STALL_CHECKS threshold.
         stall_time = time.time() - (Config.STALL_DAYS * 24 * 60 * 60)
+        last_seen_str = datetime.fromtimestamp(download.last_seen_complete).strftime('%Y-%m-%d %H:%M:%S')
+        stall_threshold_str = datetime.fromtimestamp(stall_time).strftime('%Y-%m-%d %H:%M:%S')
+        logger.debug("  - Stale source check: last_seen_complete = %s, stall threshold = %s", last_seen_str, stall_threshold_str)
         if download.last_seen_complete < stall_time:
-            return self._tick_warning(
+            last_seen_days = round((time.time() - download.last_seen_complete) / (24 * 60 * 60), 2)
+            is_stalled, reason, count = self._tick_warning(
                 current_hash, download.size_done,
                 Config.STALL_CHECKS,
-                f"Last seen complete > {Config.STALL_DAYS} days ago"
+                f"Last seen complete > {Config.STALL_DAYS} days ago (actually {last_seen_days} days ago)"
             )
+            logger.debug(
+                "  -> MATCH: Stale source detected. Ticking warning: count=%s/%s, is_stalled=%s, reason='%s'",
+                count, Config.STALL_CHECKS, is_stalled, reason
+            )
+            return is_stalled, reason, count
+        else:
+            logger.debug("  -> SKIP: Last seen complete is within the allowed timeframe.")
 
         # Source was seen complete recently — download is healthy; clear any warning.
+        last_seen_days = round((time.time() - download.last_seen_complete) / (24 * 60 * 60), 2)
+        logger.debug(
+            "  -> Download is healthy: last seen complete was recently (%s days ago). Clearing warnings if any exist.",
+            last_seen_days
+        )
         if current_hash in self.warnings:
             del self.warnings[current_hash]
+            self.save_warnings()
         return False, "", 0
 
     def cleanup_warnings(self, current_hashes: set[str], downloads_map: dict):
@@ -875,6 +972,9 @@ class StallChecker:
             else:
                 logger.info("Download with hash %s... removed from monitoring (no longer on download list)", h[:8])
             del self.warnings[h]
+
+        if to_remove:
+            self.save_warnings()
 
         self.previous_warnings = self.previous_warnings.intersection(current_hashes)
         self.previous_downloads = list(downloads_map.values())
@@ -951,6 +1051,7 @@ def main():
 
                 if identifier in stall_checker.warnings:
                     del stall_checker.warnings[identifier]
+                    stall_checker.save_warnings()
 
                 if identifier in stall_checker.previous_warnings:
                     stall_checker.previous_warnings.remove(identifier)
@@ -993,7 +1094,9 @@ def main():
 
                 stall_checker.cleanup_warnings(current_hashes, downloads_map)
 
-                for download in incomplete_downloads:
+                for index, download in enumerate(incomplete_downloads):
+                    if logger.getEffectiveLevel() == logging.DEBUG and index > 0:
+                        logger.debug("")
                     is_stalled, stall_reason, check_count = stall_checker.check_status(download)
                     download_states[download.hash] = (is_stalled, stall_reason, check_count)
 

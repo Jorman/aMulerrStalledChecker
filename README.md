@@ -18,6 +18,7 @@ When aMulerr downloads get stuck without sources or stall indefinitely, this too
 ## ✨ Features
 
 - 🧠 **Smart Stall Detection** — Configurable checks before marking downloads as stalled
+- 💾 **Persistent Warnings** — Warning history is saved to disk (when file logging is active) so counts survive container restarts
 - 🧹 **Automatic Cleanup** — Removes stalled downloads and triggers new searches
 - 🗂️ **Category-Based Management** — Handles Sonarr and Radarr downloads separately via categories
 - 🔀 **Multi-Instance Support** — Connect multiple Radarr and/or Sonarr instances via pipe-separated env vars
@@ -27,7 +28,7 @@ When aMulerr downloads get stuck without sources or stall indefinitely, this too
 - 🔔 **Apprise Notifications** — Multi-service alerts (Telegram, Discord, Email, Slack, Pushover, etc.)
 - 🐳 **Docker Native** — Easy deployment and management
 - 🧪 **Dry Run Mode** — Test configuration without actual changes
-- 📜 **Detailed Logging** — Console and optional file logging with configurable levels
+- 📜 **Detailed Logging & Debug** — Console and optional file logging with descriptive step-by-step debug traces
 
 ---
 
@@ -254,8 +255,8 @@ Each download is matched to its instance by **category**: when a download's aMul
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `LOG_LEVEL` | Logging level: `debug`, `info`, `warning`, `error`, `critical` | `info` | ❌ No |
-| `LOG_TO_FILE` | Directory path where the log file will be created as `amulerr_stalled_checker.log` | `None` | ❌ No |
+| `LOG_LEVEL` | Logging level: `debug`, `info`, `warning`, `error`, `critical`. Setting to `debug` prints highly detailed step-by-step traces showing the reason why any file check is matched or skipped (e.g., grace period, queue status, progress, size changes). | `info` | ❌ No |
+| `LOG_TO_FILE` | Directory path where the log file will be created as `amulerr_stalled_checker.log`. If configured, it also enables warnings persistence via `warnings.json` in the same directory (warning counts survive container restarts). | `None` | ❌ No |
 | `DRY_RUN` | Test mode — no actual deletions (`true`/`false`) | `false` | ❌ No |
 | `TZ` | Timezone (e.g., `Europe/Rome`) | `UTC` | ❌ No |
 
